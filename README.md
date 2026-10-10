@@ -18,6 +18,9 @@ Optional env:
 | `TG_ALLOW` | *(empty)* | lock to one chat id — **set this in production** |
 | `TG_TIMEOUT` | `60` | command timeout (seconds) |
 | `TG_CWD` | cwd | initial working directory |
+| `TG_HTTP_TOKEN` | *(empty)* | relay auth secret — **relay disabled if unset** |
+| `TG_HTTP_PORT` | `8080` | relay listen port |
+| `TG_HTTP_BIND` | `0.0.0.0` | relay bind address |
 
 Get your chat id: message `@userinfobot` on Telegram.
 
@@ -38,6 +41,32 @@ python3 bot.py
 | `/help` | help |
 
 Output longer than 4000 chars is split across multiple messages.
+
+## HTTP relay
+
+Same shell, driven over HTTP instead of Telegram (operator API):
+
+```bash
+export TG_HTTP_TOKEN="<secret>"
+python3 bot.py
+```
+
+```bash
+# raw command
+curl -s -X POST http://<host>:8080/exec -H "X-Token: <secret>" --data 'id'
+
+# json
+curl -s -X POST http://<host>:8080/exec -H "X-Token: <secret>" \
+  -H "Content-Type: application/json" -d '{"cmd":"uname -a"}'
+
+# bearer auth
+curl -s -X POST http://<host>:8080/exec -H "Authorization: Bearer <secret>" --data 'whoami'
+
+curl -s http://<host>:8080/health
+```
+
+Responses are `text/plain`: stdout+stderr, `[rc=N]` appended on failure, `cd` persists across calls.
+Auth: `X-Token` header or `Authorization: Bearer`. Missing/wrong token → `401`.
 
 ## Sandbox deploy
 

